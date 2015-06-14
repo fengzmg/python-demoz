@@ -5,6 +5,8 @@ import threading
 import multiprocessing
 import time
 import random
+from Queue import Queue
+import itertools
 
 headers = {
     'Referer': 'http://en.wikipedia.org/wiki/Main_Page',
@@ -130,7 +132,7 @@ class CarListExtractionThread(threading.Thread):
         self.link_pages.append(link_to_extract) if not link_to_extract in self.link_pages else None
 
     def run(self):
-        print 'retrieving car list from %s\n' % self.link_to_extract
+        # print 'retrieving car list from %s\n' % self.link_to_extract
         res = requests.get(self.link_to_extract, proxies=proxies, headers=headers, timeout=config.get('timeout'))
         links = self.parser.parseReponseToCarList(res.text)
         self.details_links.extend(links)
@@ -140,9 +142,9 @@ class CarListExtractionThread(threading.Thread):
         next_link_page = self.parser.retrieve_next_link_page(res.text)
 
         if next_link_page is not None:
-            print 'retrieved next page: ' + next_link_page     
+            # print 'retrieved next page: ' + next_link_page     
             if not next_link_page in self.link_pages:
-                print 'spawning new thread for next page:' + next_link_page
+                # print 'spawning new thread for next page:' + next_link_page
                 new_thread = CarListExtractionThread(next_link_page, self.parser, self.details_links, self.link_pages)
                 new_thread.start()
                 threads.append(new_thread)
@@ -160,7 +162,7 @@ class CarDetailsExtractionThread(threading.Thread):
         self.name = 'Thread-' + link_to_extract
 
     def run(self):
-        print 'retrieving car info from %s\n' % self.link_to_extract
+        # print 'retrieving car info from %s\n' % self.link_to_extract
         try:
             detail_res = requests.get(self.link_to_extract, proxies=proxies, headers=headers, timeout=config.get('timeout'))
             car = self.parser.parseResponseToCar(self.link_to_extract, detail_res.text)
@@ -171,7 +173,62 @@ class CarDetailsExtractionThread(threading.Thread):
     def __call__(self, *args, **kwargs):
         self.run()
 
+
+class Worker(threading.Thread):
+    """Thread executing tasks from a given tasks queue"""
+    _ids = itertools.count(1)
+    def __init__(self, tasks):
+        threading.Thread.__init__(self)
+        self.id = 'Worker-%03d' % self._ids.next()
+        self.tasks = tasks
+        self.daemon = True
+        self.start()
+        print 'started worker ' + self.id
+
+    def run(self):
+        while True:
+            func, args, kargs = self.tasks.get()
+            try:
+                func(*args, **kargs)
+            except Exception, e:
+                print e
+            finally:
+                self.tasks.task_done()
+
+class ThreadPool:
+    """Pool of threads consuming tasks from a queue"""
+    def __init__(self, num_threads):
+        self.tasks = Queue(num_threads)
+        for _ in range(num_threads): Worker(self.tasks)
+
+    def add_task(self, func, *args, **kargs):
+        """Add a task to the queue"""
+        self.tasks.put((func, args, kargs))
+
+    def wait_completion(self):
+        """Wait for completion of all the tasks in the queue"""
+        self.tasks.join()
+
+class Timer:
+    def __init__(self):
+        self.start_time = time.time()  # second
+        self.stop_time = None
+
+    def start(self):
+        self.start_time = time.time() # second
+
+    def stop(self):
+        self.stop_time = time.time()  # second
+
+    def elapse_time(self):
+        if self.stop_time:
+            return self.stop_time - self.start_time
+        else:
+            raise Exception("Timer.stop() is not called")
+
 def list_cars():
+    timer = Timer()
+    timer.start()
     details_links = []
     CarListExtractionThread(search_url, SgCarMartCarListParser(), details_links).run()
     print 'detected %d cars...' % len(details_links)
@@ -182,22 +239,25 @@ def list_cars():
     for detail_link in  list(set(details_links)):
         t = CarDetailsExtractionThread(detail_link, SgCarMartCarDetailParser(), cars)
         time.sleep(random.randint(0,30)/100.0)
-        t.start()
+        #t.start()
         threads.append(t)
-    #thread_pool = multiprocessing.Pool(processes=50)
-    #[thread_pool.apply(t) for t in threads]
-    #thread_pool.close()
-    #thread_pool.join() # must call close() before calling join
-    for thread in threads:
-        thread.join()
+
+    thread_pool = ThreadPool(100)
+    [thread_pool.add_task(t) for t in threads]
+    
+    thread_pool.wait_completion()
 
     cars.sort(key=lambda car: car.depreciation_by_year)
 
-    print 'retrieved %d cars' % len(cars)   
-    print 'top 100 value for money:'
+    timer.stop()
 
-    for car in cars[:100]:
+    print 'retrieved %d cars' % len(cars)   
+    print 'top 50 value for money:'
+
+    for car in cars[:50]:
         print car
+
+    print 'Elapse time: %f seconds' % timer.elapse_time()
 
 if __name__ == '__main__':
     list_cars()
