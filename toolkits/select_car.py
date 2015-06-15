@@ -2,7 +2,7 @@ import requests
 import re
 import datetime
 import threading
-import multiprocessing
+import urllib
 import time
 import random
 from Queue import Queue
@@ -18,17 +18,23 @@ proxies = {
     'http': None
 }
 
-search_url = 'http://www.sgcarmart.com/used_cars/listing.php?RPG=%(page_size)s&MOD=Car+Make+%%2F+Model&ASL=1&PR1=0&PR2=&FR=%(from)s&TO=%(to)s&TRN=&ENG=%(engine_cap)s&VTS[]=2&VTS[]=13&VTS[]=12&VTS[]=11&VTS[]=10&VTS[]=9&VTS[]=8&VTS[]=7&VTS[]=6&VTS[]=3&FUE=&MIL_C=&OMV_C=&COE_C=&OWN_C=&OPC[]=0&DL=&LOC=&AVL=2' % \
-             {
-                'from': '2006',
-                'to': '2007',
-                'engine_cap': '4', # 2 for 2001 cc- 3000 cc, 5 for < 661cc, 4 for <1600cc
-                'page_size': '100'
-              }
+search_url = 'http://www.sgcarmart.com/used_cars/listing.php'
+params = {
+            'MOD': '',
+            'FR': '2007',
+            'TO': '2009',
+            'TRN': '', # 1 for manual, 2 for auto, '' for any  
+            'ENG': '', # 2 for 2001 cc- 3000 cc, 5 for < 661cc, 4 for <1600cc
+            'AVL': '2', # '' for any, 1 for sold, 2 for available
+            'OPC[]': '0', # 0 for normal
+            'VTS[]':['2','3','6','7','8','9','10','11','12','13'],
+            'RPG': '100'
+        }
 
 config = {
     'async_enabled': False,
-    'timeout': 30
+    'timeout': 30,
+    'max_thread_pool_size': 30
 }
 
 class Car(object):
@@ -162,7 +168,6 @@ class CarDetailsExtractionThread(threading.Thread):
         self.name = 'Thread-' + link_to_extract
 
     def run(self):
-        # print 'retrieving car info from %s\n' % self.link_to_extract
         try:
             detail_res = requests.get(self.link_to_extract, proxies=proxies, headers=headers, timeout=config.get('timeout'))
             car = self.parser.parseResponseToCar(self.link_to_extract, detail_res.text)
@@ -183,7 +188,7 @@ class Worker(threading.Thread):
         self.tasks = tasks
         self.daemon = True
         self.start()
-        print 'started worker ' + self.id
+        # print 'started worker ' + self.id
 
     def run(self):
         while True:
@@ -230,19 +235,23 @@ def list_cars():
     timer = Timer()
     timer.start()
     details_links = []
-    CarListExtractionThread(search_url, SgCarMartCarListParser(), details_links).run()
+    start_url = '%s?%s' % (search_url, urllib.urlencode(params, doseq=True))
+    print 'searching for ', params
+    print 'retrieving from url:', start_url
+    CarListExtractionThread(start_url, SgCarMartCarListParser(), details_links).run()
     print 'detected %d cars...' % len(details_links)
     cars = []
     threads = []
     
-
-    for detail_link in  list(set(details_links)):
+    details_links = list(set(details_links))
+    for detail_link in  details_links:
         t = CarDetailsExtractionThread(detail_link, SgCarMartCarDetailParser(), cars)
         time.sleep(random.randint(0,30)/100.0)
         #t.start()
         threads.append(t)
 
-    thread_pool = ThreadPool(100)
+    thread_pool = ThreadPool(min(config.get('max_thread_pool_size', 20), len(details_links)))
+
     [thread_pool.add_task(t) for t in threads]
     
     thread_pool.wait_completion()
@@ -252,9 +261,9 @@ def list_cars():
     timer.stop()
 
     print 'retrieved %d cars' % len(cars)   
-    print 'top 50 value for money:'
+    print 'top %d value for money:' % min(50, len(cars))
 
-    for car in cars[:50]:
+    for car in cars[:min(50, len(cars))]:
         print car
 
     print 'Elapse time: %f seconds' % timer.elapse_time()
