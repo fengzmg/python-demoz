@@ -1,4 +1,3 @@
-import requests
 import re
 import datetime
 import threading
@@ -7,6 +6,29 @@ import time
 import random
 from Queue import Queue
 import itertools
+import sys
+import argparse
+import csv
+import os
+
+requests = None
+
+try:
+    import requests
+except:
+    class Response:
+        text = None
+        def __init__(self, text):
+            self.text = text
+
+    class Request:
+        def __init__(self):
+            pass
+        def get(self, url, proxies=None, headers={}, timeout=0):
+            response = urllib.urlopen(url, proxies=proxies)
+            return Response(response.read())
+    print "'requests' package is not available. using the fallback request"
+    requests = Request()
 
 headers = {
     'Referer': 'http://en.wikipedia.org/wiki/Main_Page',
@@ -15,16 +37,16 @@ headers = {
 }
 
 proxies = {
-    'http': None
+    #'http': None
 }
 
 search_url = 'http://www.sgcarmart.com/used_cars/listing.php'
 params = {
-            'MOD': '',
+            'MOD': 'Yaris',
             'FR': '2007',
             'TO': '2009',
             'TRN': '', # 1 for manual, 2 for auto, '' for any  
-            'ENG': '', # 2 for 2001 cc- 3000 cc, 5 for < 661cc, 4 for <1600cc
+            'ENG': '0', # 2 for 2001 cc- 3000 cc, 5 for < 661cc, 4 for <1600cc
             'AVL': '2', # '' for any, 1 for sold, 2 for available
             'OPC[]': '0', # 0 for normal
             'VTS[]':['2','3','6','7','8','9','10','11','12','13'],
@@ -32,9 +54,10 @@ params = {
         }
 
 config = {
-    'async_enabled': False,
     'timeout': 30,
-    'max_thread_pool_size': 30
+    'max_thread_pool_size': 50,
+    'export_ind': False,
+    'export_path': '/tmp/cars.csv'
 }
 
 class Car(object):
@@ -66,8 +89,7 @@ class Car(object):
                 "Road Tax:      %d\n" % self.road_tax + \
                 "No of Owners:  %d\n" % self.no_of_owners + \
                 "Depreciation:  %s\n" % self.depreciation_by_year + \
-                "Detail:        %s\n" % self.detail_link + \
-                "==============================================================="
+                "Detail:        %s\n" % self.detail_link
 
 class SgCarMartCarDetailParser:
     def __init__(self):
@@ -179,6 +201,31 @@ class CarDetailsExtractionThread(threading.Thread):
         self.run()
 
 
+class ResultExtractor:
+    def __init__(self,cars=[], filename=None, format='csv'):
+        self.cars = cars
+        self.filename = filename
+        self.format = format
+        self.ensure_out_dir()
+
+    def ensure_out_dir(self):
+        out_dir = os.path.dirname(self.filename)
+        if not out_dir == "" and not os.path.exists(out_dir):
+            try:
+                os.makedirs(out_dir)
+            except Exception as e:
+                print 'Failed to create director: ', out_dir
+                raise e
+
+    def export(self):
+        with open(config['export_path'], 'w') as csvfile:
+            writer = csv.writer(csvfile, lineterminator='\n')
+            writer.writerow(['Car', 'Price', 'OMV', 'Reg Date', 'Eng Cap', 'Transmission', 'Road Tax', 'No of Owners', 'Depreciation', 'Details'])
+            for car in self.cars:
+                writer.writerow([car.car_type, car.price, car.omv, car.reg_date, car.engine_cap, car.transmission, car.road_tax, car.no_of_owners, car.depreciation_by_year, car.detail_link])
+        
+        print 'exported to ', config['export_path']
+
 class Worker(threading.Thread):
     """Thread executing tasks from a given tasks queue"""
     _ids = itertools.count(1)
@@ -246,7 +293,7 @@ def list_cars():
     details_links = list(set(details_links))
     for detail_link in  details_links:
         t = CarDetailsExtractionThread(detail_link, SgCarMartCarDetailParser(), cars)
-        time.sleep(random.randint(0,30)/100.0)
+        time.sleep(random.randint(0,3)/100.0)
         #t.start()
         threads.append(t)
 
@@ -266,8 +313,21 @@ def list_cars():
     for car in cars[:min(50, len(cars))]:
         print car
 
+    if config['export_ind'] and len(cars) > 0:
+        ResultExtractor(cars[:min(50, len(cars))], config['export_path'], 'csv').export()
+
     print 'Elapse time: %f seconds' % timer.elapse_time()
 
+def parse_args(cmd=None):
+    parser = argparse.ArgumentParser(prog='select_car.py')
+    parser.add_argument('-e', '--export', action='store_true', help='enable export')
+    parser.add_argument('-o', '--output_file', action='store', default='/tmp/cars.csv')
+    args = parser.parse_args()
+    if args.export:
+        config['export_ind'] = True
+    config['export_path'] = args.output_file
+
 if __name__ == '__main__':
+    parse_args()
     list_cars()
 
